@@ -46,7 +46,7 @@ from PIL import Image, ImageDraw, ImageTk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 SIGNATURE_DEFAULT_WIDTH_PX = 150  # default on-canvas signature width, in pixels
-TEXT_DEFAULT_FONT_PT = 12         # default font size for dates/typed names, in PDF points
+TEXT_DEFAULT_FONT_PT = 6           # default font size for dates/typed names, in PDF points (50% of the previous 12pt default)
 CANVAS_TARGET_WIDTH = 800         # rendered page width in pixels
 PLACEMENT_STAGGER_PX = 20         # offset each successive auto-placed item so they don't stack
 
@@ -198,14 +198,6 @@ class PDFSignerApp(TkinterDnD.Tk):
         self.open_btn = ttk.Button(toolbar, text="Open PDF...", command=self._open_dialog)
         self.open_btn.pack(side="left", padx=4)
 
-        self.sign_btn = ttk.Button(toolbar, text="Draw Signature", command=self._open_signature_pad,
-                                    state="disabled")
-        self.sign_btn.pack(side="left", padx=4)
-
-        self.load_sig_btn = ttk.Button(toolbar, text="Load Signature...", command=self._load_signature_file,
-                                        state="disabled")
-        self.load_sig_btn.pack(side="left", padx=4)
-
         self.name_btn = ttk.Button(toolbar, text="Type Name...", command=self._add_name,
                                     state="disabled")
         self.name_btn.pack(side="left", padx=4)
@@ -214,17 +206,25 @@ class PDFSignerApp(TkinterDnD.Tk):
                                          state="disabled")
         self.load_name_btn.pack(side="left", padx=4)
 
+        self.sign_btn = ttk.Button(toolbar, text="Draw Signature", command=self._open_signature_pad,
+                                    state="disabled")
+        self.sign_btn.pack(side="left", padx=4)
+
+        self.load_sig_btn = ttk.Button(toolbar, text="Load Signature...", command=self._load_signature_file,
+                                        state="disabled")
+        self.load_sig_btn.pack(side="left", padx=4)
+
         self.date_btn = ttk.Button(toolbar, text="Add Today's Date", command=self._add_date,
                                     state="disabled")
         self.date_btn.pack(side="left", padx=4)
 
-        self.undo_sig_btn = ttk.Button(toolbar, text="Clear All Signatures",
-                                        command=self._clear_all_signatures, state="disabled")
-        self.undo_sig_btn.pack(side="left", padx=4)
-
         self.undo_name_btn = ttk.Button(toolbar, text="Clear All Names",
                                          command=lambda: self._clear_all_text("name"), state="disabled")
         self.undo_name_btn.pack(side="left", padx=4)
+
+        self.undo_sig_btn = ttk.Button(toolbar, text="Clear All Signatures",
+                                        command=self._clear_all_signatures, state="disabled")
+        self.undo_sig_btn.pack(side="left", padx=4)
 
         self.undo_date_btn = ttk.Button(toolbar, text="Clear All Dates",
                                          command=lambda: self._clear_all_text("date"), state="disabled")
@@ -479,20 +479,20 @@ class PDFSignerApp(TkinterDnD.Tk):
 
     def _default_position(self, kind):
         """A sensible starting spot near the bottom of the page so a fresh
-        item doesn't land on top of body text. Successive items of the same
-        kind are staggered slightly so they don't stack exactly on top of
-        each other. The user drags each wherever it needs to go."""
+        item doesn't land on top of body text, arranged left-to-right as
+        name, signature, date. Successive items of the same kind are
+        staggered slightly so they don't stack exactly on top of each
+        other. The user drags each wherever it needs to go."""
         page = self.doc[self.page_index]
         height_px = page.rect.height * self.zoom
-        if kind == "signature":
-            base_x, base_y = CANVAS_TARGET_WIDTH * 0.25, height_px * 0.85
-            offset = len(self.signature_items) * PLACEMENT_STAGGER_PX
-        elif kind == "name":
-            # Sits just below the signature, like a "print name" line.
-            base_x, base_y = CANVAS_TARGET_WIDTH * 0.25, height_px * 0.93
+        if kind == "name":
+            base_x, base_y = CANVAS_TARGET_WIDTH * 0.08, height_px * 0.85
             offset = len(self.text_items["name"]) * PLACEMENT_STAGGER_PX
+        elif kind == "signature":
+            base_x, base_y = CANVAS_TARGET_WIDTH * 0.38, height_px * 0.85
+            offset = len(self.signature_items) * PLACEMENT_STAGGER_PX
         else:  # "date"
-            base_x, base_y = CANVAS_TARGET_WIDTH * 0.62, height_px * 0.85
+            base_x, base_y = CANVAS_TARGET_WIDTH * 0.68, height_px * 0.85
             offset = len(self.text_items["date"]) * PLACEMENT_STAGGER_PX
         return base_x + offset, base_y + offset
 
