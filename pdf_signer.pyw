@@ -261,6 +261,17 @@ class PDFSignerApp(TkinterDnD.Tk):
         container.rowconfigure(0, weight=1)
         container.columnconfigure(0, weight=1)
 
+        # Mouse-wheel scrolling of the page view: plain wheel scrolls
+        # vertically, Shift+wheel scrolls horizontally. <MouseWheel> covers
+        # Windows/macOS; <Button-4>/<Button-5> cover Linux (X11), which
+        # sends those instead of a MouseWheel event.
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel_y)
+        self.canvas.bind("<Shift-MouseWheel>", self._on_mousewheel_x)
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+        self.canvas.bind("<Shift-Button-4>", lambda e: self.canvas.xview_scroll(-1, "units"))
+        self.canvas.bind("<Shift-Button-5>", lambda e: self.canvas.xview_scroll(1, "units"))
+
         # Let any placed signature/date/name be dragged around to reposition
         # it. Bound by tag (shared across every instance of that kind) — the
         # handler looks up which specific item ("current") received the
@@ -683,6 +694,17 @@ class PDFSignerApp(TkinterDnD.Tk):
         self._resize_handle_id = None
 
     # ------------------------------------------------------------- Delete ---
+    # -------------------------------------------------------------- Scroll ---
+    def _on_mousewheel_y(self, event):
+        # event.delta is ±120 per notch on Windows, a small integer on
+        # macOS — either way, treat any wheel tick as one scroll unit.
+        direction = -1 if event.delta > 0 else 1
+        self.canvas.yview_scroll(direction, "units")
+
+    def _on_mousewheel_x(self, event):
+        direction = -1 if event.delta > 0 else 1
+        self.canvas.xview_scroll(direction, "units")
+
     def _on_delete_key(self, event):
         # Use the mouse position carried on the key event rather than
         # tracking focus/selection state, so whichever specific instance is
