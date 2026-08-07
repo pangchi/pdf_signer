@@ -6,6 +6,8 @@ save.
 
 ## Features
 
+- **Mouse-wheel scrolling**: scroll the wheel to move the page view up and
+  down, hold Shift while scrolling to move it left and right.
 - **Drag and drop** a PDF onto the window (or use "Open PDF...").
 - **Type your name** to drop in a typed name (handy alongside — or instead
   of — a drawn signature, e.g. a "print name" line). You can optionally
