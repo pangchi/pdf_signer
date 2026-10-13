@@ -36,6 +36,7 @@ def _ensure_deps():
 _ensure_deps()
 
 import datetime
+import json
 import math
 import os
 import tkinter as tk
@@ -54,6 +55,11 @@ PLACEMENT_STAGGER_PX = 20         # offset each successive auto-placed item so t
 # name .txt files) default here, distinct from the PDF's own folder (which
 # the final "Save Signed PDF As..." dialog defaults to instead).
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Remembered layout (where you last put the name / signature / date and how
+# big they were) lives next to the script. Delete this file to go back to
+# the built-in default layout.
+SETTINGS_PATH = os.path.join(SCRIPT_DIR, "pdf_signer_settings.json")
 
 # "date" and "name" (typed name) are both simple text overlays that behave
 # identically — same drag/resize/delete/save mechanics — so they share the
@@ -187,6 +193,13 @@ class PDFSignerApp(TkinterDnD.Tk):
         self._resize_start_value = 0.0
 
         self.modified = False  # True whenever there's an unsaved change to warn about on close
+
+        # Layout remembered from earlier sessions, keyed by kind ("name",
+        # "signature", "date"); and, for this session, the item of each kind
+        # the user most recently placed, moved or resized (that's the one
+        # whose position/size gets remembered on save).
+        self.layout_memory = self._load_layout_memory()
+        self._last_touched = {}
 
         self._build_ui()
 
@@ -360,6 +373,7 @@ class PDFSignerApp(TkinterDnD.Tk):
         self._drag_canvas_id = None
         self._resize_type = None
         self._resize_handle_id = None
+        self._last_touched = {}
         self.modified = False
         self.sign_btn.config(state="normal")
         self.load_sig_btn.config(state="normal")
@@ -488,27 +502,103 @@ class PDFSignerApp(TkinterDnD.Tk):
         x, y = self._default_position("date")
         self._place_text("date", x, y, date_str)
 
-    def _default_position(self, kind):
-        """A sensible starting spot near the bottom of the page so a fresh
-        item doesn't land on top of body text, arranged left-to-right as
-        name, signature, date. Successive items of the same kind are
-        staggered slightly so they don't stack exactly on top of each
-        other. The user drags each wherever it needs to go."""
+    # ------------------------------------------------- Remembered layout ---
+    @staticmethod
+    def _load_layout_memory():
+        """Read the remembered layout from disk. Anything missing, corrupt
+        or out of range is ignored, so a bad file can never break startup."""
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                raw = json.load(f).get("layout", {})
+        except Exception:
+            return {}
+        memory = {}
+        if not isinstance(raw, dict):
+            return memory
+        for kind in ("name", "signature", "date"):
+            entry = raw.get(kind)
+            try:
+                x_frac = min(1.0, max(0.0, float(entry["x_frac"])))
+                y_frac = min(1.0, max(0.0, float(entry["y_frac"])))
+                size = float(entry["size"])
+            except (TypeError, KeyError, ValueError):
+                continue
+            if size > 0:
+                memory[kind] = {"x_frac": x_frac, "y_frac": y_frac, "size": size}
+        return memory
+
+    def _remembered_width_px(self):
+        """Remembered signature width in canvas pixels, or None."""
+        entry = self.layout_memory.get("signature")
+        if not entry:
+            return None
+        return int(round(min(600, max(30, entry["size"] * CANVAS_TARGET_WIDTH))))
+
+    def _remembered_font_pt(self, kind):
+        """Remembered font size in points for 'name'/'date', or None."""
+        entry = self.layout_memory.get(kind)
+        if not entry:
+            return None
+        return min(96, max(6, entry["size"]))
+
+    def _touch(self, kind, item):
+        """Note that this is the item of its kind to remember on save."""
+        self._last_touched[kind] = item
+
+    def _remember_layout(self):
+        """Store position and size of the last-used name, signature and date
+        so the next session drops them in the same place at the same size.
+        Position is stored as a fraction of the page, so it carries over
+        between page sizes. Kinds with nothing on the page keep whatever
+        was remembered before. Best-effort: failure to write is non-fatal."""
         page = self.doc[self.page_index]
         height_px = page.rect.height * self.zoom
-        if kind == "name":
+        for kind in ("name", "signature", "date"):
+            items = self._items_for(kind)
+            if not items:
+                continue
+            item = self._last_touched.get(kind)
+            if item not in items:
+                item = items[-1]
+            cx, cy = item["canvas_xy"]
+            size = (item["width_px"] / CANVAS_TARGET_WIDTH if kind == "signature"
+                    else item["font_pt"])
+            self.layout_memory[kind] = {
+                "x_frac": min(1.0, max(0.0, cx / CANVAS_TARGET_WIDTH)),
+                "y_frac": min(1.0, max(0.0, cy / height_px)),
+                "size": size,
+            }
+        try:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump({"layout": self.layout_memory}, f, indent=2)
+        except Exception:
+            return False
+        return True
+
+    def _default_position(self, kind):
+        """Where a fresh item lands: the spot it was last left in (see
+        _remember_layout), or on first use a row near the bottom of the page
+        arranged left-to-right as name, signature, date. Successive items
+        of the same kind are staggered slightly so they don't stack exactly
+        on top of each other. The user drags each wherever it needs to go."""
+        page = self.doc[self.page_index]
+        height_px = page.rect.height * self.zoom
+        entry = self.layout_memory.get(kind)
+        if entry:
+            base_x = CANVAS_TARGET_WIDTH * entry["x_frac"]
+            base_y = height_px * entry["y_frac"]
+        elif kind == "name":
             base_x, base_y = CANVAS_TARGET_WIDTH * 0.08, height_px * 0.85
-            offset = len(self.text_items["name"]) * PLACEMENT_STAGGER_PX
         elif kind == "signature":
             base_x, base_y = CANVAS_TARGET_WIDTH * 0.38, height_px * 0.85
-            offset = len(self.signature_items) * PLACEMENT_STAGGER_PX
         else:  # "date"
             base_x, base_y = CANVAS_TARGET_WIDTH * 0.68, height_px * 0.85
-            offset = len(self.text_items["date"]) * PLACEMENT_STAGGER_PX
+        count = len(self.signature_items) if kind == "signature" else len(self.text_items[kind])
+        offset = count * PLACEMENT_STAGGER_PX
         return base_x + offset, base_y + offset
 
     def _place_signature(self, path, orig_img, size_px, x, y, width_px=None):
-        width_px = width_px or SIGNATURE_DEFAULT_WIDTH_PX
+        width_px = width_px or self._remembered_width_px() or SIGNATURE_DEFAULT_WIDTH_PX
         thumbnail = self._make_signature_thumbnail(orig_img, width_px)
         canvas_id = self.canvas.create_image(x, y, image=thumbnail,
                                               anchor="center", tags=("signature",))
@@ -523,6 +613,7 @@ class PDFSignerApp(TkinterDnD.Tk):
             "thumbnail": thumbnail,
         }
         self.signature_items.append(item)
+        self._touch("signature", item)
         self._update_handle_for_item(item, "signature")
         self.undo_sig_btn.config(state="normal")
         self.modified = True
@@ -539,7 +630,7 @@ class PDFSignerApp(TkinterDnD.Tk):
 
     def _place_text(self, kind, x, y, text, font_pt=None):
         """Place a text overlay of the given kind ('date' or 'name')."""
-        font_pt = font_pt or TEXT_DEFAULT_FONT_PT
+        font_pt = font_pt or self._remembered_font_pt(kind) or TEXT_DEFAULT_FONT_PT
         disp_size = max(1, round(font_pt * self.zoom))
         canvas_id = self.canvas.create_text(x, y, text=text, fill="black",
                                              font=("Helvetica", disp_size), anchor="nw",
@@ -552,6 +643,7 @@ class PDFSignerApp(TkinterDnD.Tk):
             "font_pt": font_pt,
         }
         self.text_items[kind].append(item)
+        self._touch(kind, item)
         self._update_handle_for_item(item, kind)
         self._clear_btn_for[kind].config(state="normal")
         self.modified = True
@@ -610,6 +702,7 @@ class PDFSignerApp(TkinterDnD.Tk):
         self.canvas.coords(self._drag_canvas_id, x, y)
         item["canvas_xy"] = (x, y)
         self._update_handle_for_item(item, self._drag_type)
+        self._touch(self._drag_type, item)
         self.modified = True
 
     def _end_drag(self, _event):
@@ -687,6 +780,7 @@ class PDFSignerApp(TkinterDnD.Tk):
             self.canvas.itemconfig(item["canvas_id"], font=("Helvetica", disp_size))
             self._update_handle_for_item(item, self._resize_type)
 
+        self._touch(self._resize_type, item)
         self.modified = True
 
     def _end_resize(self, _event):
@@ -798,7 +892,10 @@ class PDFSignerApp(TkinterDnD.Tk):
             messagebox.showerror("Failed to save", str(exc))
             return
 
-        self.status.set(f"Saved: {out_path}")
+        remembered = self._remember_layout()
+        self.status.set(f"Saved: {out_path}" if remembered else
+                         f"Saved: {out_path} (couldn't write {os.path.basename(SETTINGS_PATH)}, "
+                         f"so the layout won't be remembered)")
         self.modified = False
         messagebox.showinfo("Saved", f"Signed PDF saved to:\n{out_path}")
 
