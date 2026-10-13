@@ -22,6 +22,9 @@ save.
 - **Drag** any signature, name, or date to reposition it.
 - **Resize** any signature, name, or date by dragging the small blue handle
   at its bottom-right corner.
+- **Remembers your layout**: when you save a signed PDF, the position and
+  size of your name, signature, and date are remembered, and next time they
+  drop in at that same spot and size (see Notes).
 - **Remove one at a time**: hover over a signature, name, or date and press
   `Delete` or `Backspace`.
 - **Clear All Names** / **Clear All Signatures** / **Clear All Dates**
@@ -76,6 +79,8 @@ python pdf_signer.py
    **Clear All** button (in that order on the toolbar).
 7. Click **Save Signed PDF As...** to save the result. It defaults to the
    same folder as the original PDF, with `_signed` appended to the name.
+   Saving also remembers where you left your name, signature, and date, and
+   how big they were, so next time they appear there already.
 
 ## Notes
 
@@ -83,11 +88,24 @@ python pdf_signer.py
   **Load Name...**, **Draw Signature**, **Load Signature...**,
   **Add Today's Date**, **Clear All Names**, **Clear All Signatures**,
   **Clear All Dates**, with **Save Signed PDF As...** docked on the right.
-- Freshly dropped-in items default to a row near the bottom of the page,
-  arranged left to right as **name, signature, date**. Drag any of them
-  wherever you actually need them — this is just a sensible starting spot.
-- Typed names and dates default to a small font size when first dropped in;
-  drag their corner handle to size them up.
+- **Remembered layout.** On the very first use, items drop onto a row near
+  the bottom of the page, left to right as **name, signature, date**, with
+  small default sizes. After that, each time you click **Save Signed PDF
+  As...** the position and size of your name, signature, and date are stored
+  in `pdf_signer_settings.json` next to the script, and the next items you
+  drop in start there instead.
+  - If you've placed several of one kind, the one you placed, moved, or
+    resized most recently is the one remembered.
+  - Position is stored relative to the page (as a fraction of its width and
+    height), so it still lands sensibly on a different page size.
+  - A kind you didn't use in a given save (say, no name this time) keeps
+    its previously remembered layout.
+  - Nothing is remembered until you save; closing without saving leaves the
+    stored layout as it was.
+  - To go back to the built-in default layout, delete
+    `pdf_signer_settings.json`. If that file is missing, unreadable, or
+    can't be written, the app simply uses the defaults and signing still
+    works.
 - Only the first page of the PDF is currently signable.
 - Signature PNGs (from the drawing pad or **Load Signature...**) and saved
   name text files (from **Type Name...** or **Load Name...**) all default
