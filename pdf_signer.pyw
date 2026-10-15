@@ -200,6 +200,9 @@ class PDFSignerApp(TkinterDnD.Tk):
         # whose position/size gets remembered on save).
         self.layout_memory = self._load_layout_memory()
         self._last_touched = {}
+        # Most recent name text / signature PNG path, used by "Add All".
+        # Restored from the settings file so it works across sessions.
+        self._last_name, self._last_sig_path = self._load_last_used()
 
         self._build_ui()
 
@@ -230,6 +233,10 @@ class PDFSignerApp(TkinterDnD.Tk):
         self.date_btn = ttk.Button(toolbar, text="Add Today's Date", command=self._add_date,
                                     state="disabled")
         self.date_btn.pack(side="left", padx=4)
+
+        self.add_all_btn = ttk.Button(toolbar, text="Add All", command=self._add_all,
+                                       state="disabled")
+        self.add_all_btn.pack(side="left", padx=4)
 
         self.undo_name_btn = ttk.Button(toolbar, text="Clear All Names",
                                          command=lambda: self._clear_all_text("name"), state="disabled")
@@ -380,6 +387,7 @@ class PDFSignerApp(TkinterDnD.Tk):
         self.name_btn.config(state="normal")
         self.load_name_btn.config(state="normal")
         self.date_btn.config(state="normal")
+        self.add_all_btn.config(state="normal")
         self.save_btn.config(state="normal")
         self.undo_sig_btn.config(state="disabled")
         self.undo_name_btn.config(state="disabled")
@@ -445,6 +453,7 @@ class PDFSignerApp(TkinterDnD.Tk):
         self._on_signature_saved(path, img.size)
 
     def _on_signature_saved(self, path, size_px):
+        self._last_sig_path = path
         orig_img = Image.open(path).convert("RGBA")
         x, y = self._default_position("signature")
         self._place_signature(path, orig_img, size_px, x, y)
@@ -455,6 +464,7 @@ class PDFSignerApp(TkinterDnD.Tk):
         if not name or not name.strip():
             return
         name = name.strip()
+        self._last_name = name
         x, y = self._default_position("name")
         self._place_text("name", x, y, name)
         if messagebox.askyesno("Save name?",
@@ -494,8 +504,41 @@ class PDFSignerApp(TkinterDnD.Tk):
         if not name:
             messagebox.showwarning("Empty file", "That file doesn't contain any text.")
             return
+        self._last_name = name
         x, y = self._default_position("name")
         self._place_text("name", x, y, name)
+
+    def _add_all(self):
+        """Drop name, signature and today's date in one click, using the
+        name and signature used last (remembered between sessions). Only
+        asks for what it doesn't have yet; cancelling a prompt skips just
+        that item."""
+        name = self._last_name
+        if not name:
+            name = simpledialog.askstring("Type your name",
+                                          "Enter the name to add to the PDF:", parent=self)
+            name = name.strip() if name else ""
+        if name:
+            self._last_name = name
+            x, y = self._default_position("name")
+            self._place_text("name", x, y, name)
+
+        sig_path = self._last_sig_path
+        if not sig_path or not os.path.isfile(sig_path):
+            sig_path = filedialog.askopenfilename(
+                title="Load a saved signature",
+                initialdir=SCRIPT_DIR,
+                filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
+            )
+        if sig_path:
+            try:
+                img = Image.open(sig_path).convert("RGBA")
+            except Exception as exc:
+                messagebox.showerror("Failed to load signature", str(exc))
+            else:
+                self._on_signature_saved(sig_path, img.size)
+
+        self._add_date()
 
     def _add_date(self):
         date_str = datetime.date.today().isoformat()
@@ -526,6 +569,21 @@ class PDFSignerApp(TkinterDnD.Tk):
             if size > 0:
                 memory[kind] = {"x_frac": x_frac, "y_frac": y_frac, "size": size}
         return memory
+
+    @staticmethod
+    def _load_last_used():
+        """Last name text and signature path from the settings file, or
+        (None, None). Never raises."""
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            name = data.get("last_name")
+            sig = data.get("last_signature_path")
+        except Exception:
+            return None, None
+        name = name.strip() if isinstance(name, str) and name.strip() else None
+        sig = sig if isinstance(sig, str) and sig else None
+        return name, sig
 
     def _remembered_width_px(self):
         """Remembered signature width in canvas pixels, or None."""
@@ -570,7 +628,9 @@ class PDFSignerApp(TkinterDnD.Tk):
             }
         try:
             with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-                json.dump({"layout": self.layout_memory}, f, indent=2)
+                json.dump({"layout": self.layout_memory,
+                           "last_name": self._last_name,
+                           "last_signature_path": self._last_sig_path}, f, indent=2)
         except Exception:
             return False
         return True
