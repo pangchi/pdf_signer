@@ -22,6 +22,8 @@ save.
 - **Drag** any signature, name, or date to reposition it.
 - **Resize** any signature, name, or date by dragging the small blue handle
   at its bottom-right corner.
+- **Add All**: one button that drops your name, signature, and today's date
+  in a single click, using the name and signature you used last (see Notes).
 - **Remembers your layout**: when you save a signed PDF, the position and
   size of your name, signature, and date are remembered, and next time they
   drop in at that same spot and size (see Notes).
@@ -71,6 +73,9 @@ python pdf_signer.py
    handle to resize it.
 4. Click **Add Today's Date** to drop today's date onto the page the same
    way.
+   Or skip steps 2–4 after the first time: **Add All** drops your name,
+   signature, and today's date together. The first time it asks for your
+   name and a signature PNG; after that it reuses them.
 5. Repeat steps 2–4 for as many signatures/names/dates as the document
    needs (e.g. initialing multiple pages, or a signature plus a witness
    line).
@@ -86,7 +91,7 @@ python pdf_signer.py
 
 - Toolbar button order, left to right: **Open PDF...**, **Type Name...**,
   **Load Name...**, **Draw Signature**, **Load Signature...**,
-  **Add Today's Date**, **Clear All Names**, **Clear All Signatures**,
+  **Add Today's Date**, **Add All**, **Clear All Names**, **Clear All Signatures**,
   **Clear All Dates**, with **Save Signed PDF As...** docked on the right.
 - **Remembered layout.** On the very first use, items drop onto a row near
   the bottom of the page, left to right as **name, signature, date**, with
@@ -106,6 +111,14 @@ python pdf_signer.py
     `pdf_signer_settings.json`. If that file is missing, unreadable, or
     can't be written, the app simply uses the defaults and signing still
     works.
+- **Add All.** Places a name, a signature, and today's date at their
+  remembered spots. The name and signature are whichever you typed/loaded/
+  drew most recently; they're stored in `pdf_signer_settings.json` (when you
+  save a PDF) so Add All works straight away in a new session. If there's no
+  remembered name or the signature file is gone, it prompts for just that
+  item; cancelling a prompt skips only that item. It never asks to save the
+  name. To change who it signs as, use **Type Name...** / **Load Signature...**
+  once, or delete the settings file.
 - Only the first page of the PDF is currently signable.
 - Signature PNGs (from the drawing pad or **Load Signature...**) and saved
   name text files (from **Type Name...** or **Load Name...**) all default
