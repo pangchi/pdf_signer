@@ -8,6 +8,9 @@ save.
 
 - **Mouse-wheel scrolling**: scroll the wheel to move the page view up and
   down, hold Shift while scrolling to move it left and right.
+- **Multi-page PDFs**: every page is stacked on one canvas, so you just scroll
+  from top to bottom. New items drop onto the page in the middle of your
+  view, and you can drag an item onto any other page.
 - **Drag and drop** a PDF onto the window (or use "Open PDF...").
 - **Type your name** to drop in a typed name (handy alongside — or instead
   of — a drawn signature, e.g. a "print name" line). You can optionally
@@ -31,6 +34,8 @@ save.
   `Delete` or `Backspace`.
 - **Clear All Names** / **Clear All Signatures** / **Clear All Dates**
   buttons to wipe everything of that kind at once.
+- **Ctrl+S** does the same as **Save Signed PDF As...** (once a PDF is
+  open).
 - **Save Signed PDF As...** composites everything onto the actual PDF (not
   a flattened image) and saves a new file — your original is left untouched.
   The save dialog defaults to the same folder the PDF was dropped from.
@@ -82,7 +87,7 @@ python pdf_signer.py
 6. To remove one, hover over it and press `Delete`/`Backspace`. To remove
    every name, every signature, or every date at once, use the matching
    **Clear All** button (in that order on the toolbar).
-7. Click **Save Signed PDF As...** to save the result. It defaults to the
+7. Click **Save Signed PDF As...** (or press `Ctrl+S`) to save the result. It defaults to the
    same folder as the original PDF, with `_signed` appended to the name.
    Saving also remembers where you left your name, signature, and date, and
    how big they were, so next time they appear there already.
@@ -119,7 +124,13 @@ python pdf_signer.py
   item; cancelling a prompt skips only that item. It never asks to save the
   name. To change who it signs as, use **Type Name...** / **Load Signature...**
   once, or delete the settings file.
-- Only the first page of the PDF is currently signable.
+- **Multi-page.** All pages are shown in one vertical stack, scaled to the
+  width of the widest page (narrower pages are centred). Pages are drawn as
+  they scroll into view and far-away ones are released, so long documents
+  stay light. Each item is saved onto whichever page it sits on when you
+  save. Remembered position is stored relative to the page the item was on.
+- Each **Save** starts from a fresh copy of the original PDF, so saving more
+  than once in a session never duplicates earlier placements.
 - Signature PNGs (from the drawing pad or **Load Signature...**) and saved
   name text files (from **Type Name...** or **Load Name...**) all default
   their save/open dialogs to the folder the script itself is running

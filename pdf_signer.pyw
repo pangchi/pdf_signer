@@ -49,6 +49,8 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 SIGNATURE_DEFAULT_WIDTH_PX = 150  # default on-canvas signature width, in pixels
 TEXT_DEFAULT_FONT_PT = 6           # default font size for dates/typed names, in PDF points (50% of the previous 12pt default)
 CANVAS_TARGET_WIDTH = 800         # rendered page width in pixels
+PAGE_GAP_PX = 14                  # grey gap between stacked pages
+PAGES_KEPT_RENDERED = 8           # rendered page bitmaps kept in memory at once
 PLACEMENT_STAGGER_PX = 20         # offset each successive auto-placed item so they don't stack
 
 # Where the script itself lives — signature/name asset files (PNGs, saved
@@ -174,9 +176,15 @@ class PDFSignerApp(TkinterDnD.Tk):
 
         self.pdf_path = None
         self.doc = None
-        self.page_index = 0
         self.zoom = 1.0
-        self.page_photo = None  # keep a reference so Tk doesn't garbage-collect it
+        # Pages are stacked top to bottom on one canvas. Per-page geometry
+        # (canvas pixels), and the bitmaps/canvas ids of pages rendered so far
+        # (rendered lazily as they scroll into view; references are kept so
+        # Tk doesn't garbage-collect the images).
+        self.page_tops, self.page_xoffs, self.page_sizes_px = [], [], []
+        self.page_photos = {}
+        self.page_image_ids = {}
+        self._render_job = None
 
         # Every placed signature/date/typed-name is its own independent
         # instance so any number can exist at once, each draggable/
@@ -273,7 +281,9 @@ class PDFSignerApp(TkinterDnD.Tk):
         self.canvas = tk.Canvas(container, bg="#ddd")
         vbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
         hbar = ttk.Scrollbar(container, orient="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        self._vbar = vbar
+        self.canvas.configure(yscrollcommand=self._on_yscroll, xscrollcommand=hbar.set)
+        self.canvas.bind("<Configure>", lambda e: self._schedule_render())
 
         self.canvas.grid(row=0, column=0, sticky="nsew")
         vbar.grid(row=0, column=1, sticky="ns")
@@ -322,6 +332,8 @@ class PDFSignerApp(TkinterDnD.Tk):
         # works regardless of which widget currently has keyboard focus.
         self.bind_all("<Delete>", self._on_delete_key)
         self.bind_all("<BackSpace>", self._on_delete_key)
+        self.bind_all("<Control-s>", self._on_save_shortcut)
+        self.bind_all("<Control-S>", self._on_save_shortcut)  # Caps Lock on
 
         # Drag and drop
         self.drop_target_register(DND_FILES)
@@ -373,7 +385,6 @@ class PDFSignerApp(TkinterDnD.Tk):
 
         self.pdf_path = path
         self.doc = doc
-        self.page_index = 0
         self.signature_items = []
         self.text_items = {kind: [] for kind in TEXT_KINDS}
         self._drag_type = None
@@ -394,25 +405,104 @@ class PDFSignerApp(TkinterDnD.Tk):
         self.undo_date_btn.config(state="disabled")
 
         self._render_page()
-        self.status.set(f"Loaded {os.path.basename(path)}. Draw or load a signature, type your "
+        self.canvas.yview_moveto(0)
+        self.canvas.xview_moveto(0)
+        self._render_visible_pages()
+        pages = self.doc.page_count
+        extra = f" ({pages} pages — scroll down through them)" if pages > 1 else ""
+        self.status.set(f"Loaded {os.path.basename(path)}{extra}. Draw or load a signature, type your "
                          f"name, or add today's date — each drops onto the page automatically, "
                          f"and you can add as many as you need.")
 
     def _render_page(self):
-        page = self.doc[self.page_index]
-        page_width_pt = page.rect.width
-        self.zoom = CANVAS_TARGET_WIDTH / page_width_pt
-        matrix = fitz.Matrix(self.zoom, self.zoom)
-        pix = page.get_pixmap(matrix=matrix)
-        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        self.page_photo = ImageTk.PhotoImage(img)
+        """Lay out every page of the document in one vertical stack (white
+        placeholders now; the actual page bitmaps are drawn lazily by
+        _render_visible_pages as they scroll into view)."""
+        pages = [self.doc[i].rect for i in range(self.doc.page_count)]
+        max_w = max(r.width for r in pages)
+        self.zoom = CANVAS_TARGET_WIDTH / max_w
+        self.page_tops, self.page_xoffs, self.page_sizes_px = [], [], []
+        y = 0.0
+        for r in pages:
+            w, h = r.width * self.zoom, r.height * self.zoom
+            self.page_tops.append(y)
+            self.page_xoffs.append((CANVAS_TARGET_WIDTH - w) / 2)
+            self.page_sizes_px.append((w, h))
+            y += h + PAGE_GAP_PX
+        total_h = y - PAGE_GAP_PX
 
         self.canvas.delete("all")
-        self.canvas.config(scrollregion=(0, 0, pix.width, pix.height))
-        self.canvas.create_image(0, 0, anchor="nw", image=self.page_photo, tags=("page",))
+        self.page_photos = {}
+        self.page_image_ids = {}
+        self.canvas.config(scrollregion=(0, 0, CANVAS_TARGET_WIDTH, total_h),
+                           yscrollincrement=40)
+        for top, xoff, (w, h) in zip(self.page_tops, self.page_xoffs, self.page_sizes_px):
+            self.canvas.create_rectangle(xoff, top, xoff + w, top + h, fill="white",
+                                          outline="#999", tags=("pagebg",))
 
-        # Re-draw any existing overlays after a re-render
+        # Re-draw any existing overlays after a re-layout
         self._redraw_overlays()
+
+    def _on_yscroll(self, first, last):
+        self._vbar.set(first, last)
+        self._schedule_render()
+
+    def _schedule_render(self):
+        if self.doc is None or self._render_job is not None:
+            return
+        self._render_job = self.after_idle(self._render_visible_pages)
+
+    def _render_visible_pages(self):
+        """Render the pages in (or near) view; drop far-away ones so a long
+        document doesn't hold every page bitmap in memory."""
+        self._render_job = None
+        if self.doc is None or not self.page_tops:
+            return
+        view_h = max(self.canvas.winfo_height(), 600)
+        top = self.canvas.canvasy(0) - view_h / 2
+        bottom = self.canvas.canvasy(0) + view_h * 1.5
+        visible = [i for i, (t, (_w, h)) in enumerate(zip(self.page_tops, self.page_sizes_px))
+                   if t <= bottom and t + h >= top]
+        for i in visible:
+            if i in self.page_photos:
+                continue
+            pix = self.doc[i].get_pixmap(matrix=fitz.Matrix(self.zoom, self.zoom))
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            photo = ImageTk.PhotoImage(img)
+            image_id = self.canvas.create_image(self.page_xoffs[i], self.page_tops[i],
+                                                 anchor="nw", image=photo, tags=("page",))
+            self.page_photos[i] = photo
+            self.page_image_ids[i] = image_id
+        # Evict the farthest pages beyond the cache size.
+        if len(self.page_photos) > PAGES_KEPT_RENDERED:
+            centre = visible[len(visible) // 2] if visible else 0
+            for i in sorted(self.page_photos, key=lambda k: -abs(k - centre)):
+                if len(self.page_photos) <= PAGES_KEPT_RENDERED:
+                    break
+                if i in visible:
+                    continue
+                self.canvas.delete(self.page_image_ids.pop(i))
+                del self.page_photos[i]
+        # Page bitmaps sit above the white placeholders but under all overlays.
+        self.canvas.tag_lower("page")
+        self.canvas.tag_lower("pagebg")
+
+    def _page_at_y(self, y):
+        """Index of the page a canvas y belongs to (the gap below a page
+        counts as part of that page; beyond the ends clamps)."""
+        idx = 0
+        for i, t in enumerate(self.page_tops):
+            if t <= y:
+                idx = i
+            else:
+                break
+        return idx
+
+    def _current_page(self):
+        """The page in the middle of the visible area — where new items land."""
+        if self.canvas.winfo_height() <= 1:
+            return 0
+        return self._page_at_y(self.canvas.canvasy(self.canvas.winfo_height() / 2))
 
     def _redraw_overlays(self):
         for item in self.signature_items:
@@ -609,8 +699,6 @@ class PDFSignerApp(TkinterDnD.Tk):
         Position is stored as a fraction of the page, so it carries over
         between page sizes. Kinds with nothing on the page keep whatever
         was remembered before. Best-effort: failure to write is non-fatal."""
-        page = self.doc[self.page_index]
-        height_px = page.rect.height * self.zoom
         for kind in ("name", "signature", "date"):
             items = self._items_for(kind)
             if not items:
@@ -619,11 +707,13 @@ class PDFSignerApp(TkinterDnD.Tk):
             if item not in items:
                 item = items[-1]
             cx, cy = item["canvas_xy"]
+            pi = self._page_at_y(cy)
+            width_px, height_px = self.page_sizes_px[pi]
             size = (item["width_px"] / CANVAS_TARGET_WIDTH if kind == "signature"
                     else item["font_pt"])
             self.layout_memory[kind] = {
-                "x_frac": min(1.0, max(0.0, cx / CANVAS_TARGET_WIDTH)),
-                "y_frac": min(1.0, max(0.0, cy / height_px)),
+                "x_frac": min(1.0, max(0.0, (cx - self.page_xoffs[pi]) / width_px)),
+                "y_frac": min(1.0, max(0.0, (cy - self.page_tops[pi]) / height_px)),
                 "size": size,
             }
         try:
@@ -641,19 +731,21 @@ class PDFSignerApp(TkinterDnD.Tk):
         arranged left-to-right as name, signature, date. Successive items
         of the same kind are staggered slightly so they don't stack exactly
         on top of each other. The user drags each wherever it needs to go."""
-        page = self.doc[self.page_index]
-        height_px = page.rect.height * self.zoom
+        pi = self._current_page()
+        width_px, height_px = self.page_sizes_px[pi]
+        left, top = self.page_xoffs[pi], self.page_tops[pi]
         entry = self.layout_memory.get(kind)
         if entry:
-            base_x = CANVAS_TARGET_WIDTH * entry["x_frac"]
-            base_y = height_px * entry["y_frac"]
+            base_x = left + width_px * entry["x_frac"]
+            base_y = top + height_px * entry["y_frac"]
         elif kind == "name":
-            base_x, base_y = CANVAS_TARGET_WIDTH * 0.08, height_px * 0.85
+            base_x, base_y = left + width_px * 0.08, top + height_px * 0.85
         elif kind == "signature":
-            base_x, base_y = CANVAS_TARGET_WIDTH * 0.38, height_px * 0.85
+            base_x, base_y = left + width_px * 0.38, top + height_px * 0.85
         else:  # "date"
-            base_x, base_y = CANVAS_TARGET_WIDTH * 0.68, height_px * 0.85
-        count = len(self.signature_items) if kind == "signature" else len(self.text_items[kind])
+            base_x, base_y = left + width_px * 0.68, top + height_px * 0.85
+        count = sum(1 for it in self._items_for(kind)
+                    if self._page_at_y(it["canvas_xy"][1]) == pi)
         offset = count * PLACEMENT_STAGGER_PX
         return base_x + offset, base_y + offset
 
@@ -904,6 +996,16 @@ class PDFSignerApp(TkinterDnD.Tk):
         self.status.set(f"All {label} cleared.")
 
     # -------------------------------------------------------------- Save ---
+    def _on_save_shortcut(self, event=None):
+        """Ctrl+S: same as Save Signed PDF As..., only from the main window
+        and only once a PDF is open."""
+        if event is not None and event.widget.winfo_toplevel() is not self:
+            return
+        if str(self.save_btn["state"]) == "disabled":
+            return "break"
+        self._save_pdf()
+        return "break"
+
     def _save_pdf(self):
         if not self.doc:
             return
@@ -923,34 +1025,46 @@ class PDFSignerApp(TkinterDnD.Tk):
         if not out_path:
             return
 
-        page = self.doc[self.page_index]
-
-        for item in self.signature_items:
-            cx, cy = item["canvas_xy"]
-            # Convert canvas pixel coords -> PDF points
-            pdf_cx, pdf_cy = cx / self.zoom, cy / self.zoom
-            sig_w_pt = item["width_px"] / self.zoom
-            sig_h_pt = sig_w_pt * (item["size_px"][1] / item["size_px"][0])
-            rect = fitz.Rect(
-                pdf_cx - sig_w_pt / 2, pdf_cy - sig_h_pt / 2,
-                pdf_cx + sig_w_pt / 2, pdf_cy + sig_h_pt / 2,
-            )
-            page.insert_image(rect, filename=item["path"])
-
-        for kind in TEXT_KINDS:
-            for item in self.text_items[kind]:
-                cx, cy = item["canvas_xy"]
-                pdf_cx, pdf_cy = cx / self.zoom, cy / self.zoom
-                page.insert_text(
-                    (pdf_cx, pdf_cy + item["font_pt"]),  # insert_text anchors baseline
-                    item["text"], fontsize=item["font_pt"], fontname="helv",
-                )
-
+        # Draw onto a fresh copy of the original each time, so saving twice in
+        # one session never stamps earlier placements on top of each other.
         try:
-            self.doc.save(out_path, garbage=4, deflate=True)
+            out_doc = fitz.open(self.pdf_path)
         except Exception as exc:
             messagebox.showerror("Failed to save", str(exc))
             return
+        try:
+            for item in self.signature_items:
+                cx, cy = item["canvas_xy"]
+                pi = self._page_at_y(cy)
+                page = out_doc[pi]
+                # Convert canvas pixel coords -> PDF points on that page
+                pdf_cx = (cx - self.page_xoffs[pi]) / self.zoom
+                pdf_cy = (cy - self.page_tops[pi]) / self.zoom
+                sig_w_pt = item["width_px"] / self.zoom
+                sig_h_pt = sig_w_pt * (item["size_px"][1] / item["size_px"][0])
+                rect = fitz.Rect(
+                    pdf_cx - sig_w_pt / 2, pdf_cy - sig_h_pt / 2,
+                    pdf_cx + sig_w_pt / 2, pdf_cy + sig_h_pt / 2,
+                )
+                page.insert_image(rect, filename=item["path"])
+
+            for kind in TEXT_KINDS:
+                for item in self.text_items[kind]:
+                    cx, cy = item["canvas_xy"]
+                    pi = self._page_at_y(cy)
+                    pdf_cx = (cx - self.page_xoffs[pi]) / self.zoom
+                    pdf_cy = (cy - self.page_tops[pi]) / self.zoom
+                    out_doc[pi].insert_text(
+                        (pdf_cx, pdf_cy + item["font_pt"]),  # insert_text anchors baseline
+                        item["text"], fontsize=item["font_pt"], fontname="helv",
+                    )
+
+            out_doc.save(out_path, garbage=4, deflate=True)
+        except Exception as exc:
+            messagebox.showerror("Failed to save", str(exc))
+            return
+        finally:
+            out_doc.close()
 
         remembered = self._remember_layout()
         self.status.set(f"Saved: {out_path}" if remembered else
